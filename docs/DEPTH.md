@@ -16,6 +16,7 @@ AI/ML · 传统ML · 中型
 | M6 | 入口偏移 | 差异定位和外推审查 | `src/venuegate/venue_shift/service.py` | `tests/test_venue_shift.py` |
 | M7 | 核验分派 | 硬规则与额度分配 | `src/venuegate/usher_capacity/service.py` | `tests/test_usher_capacity.py` |
 | M8 | 值班登记 | 单据及额度证据 | `src/venuegate/entrance_register/service.py` | `tests/test_entrance_register.py` |
+| M9 | 试算生效 | 降客流闸门、版本失效与额度冻结 | `src/venuegate/shift_trials/service.py` | `tests/test_shift_trials.py`、`tests/test_trial_api.py` |
 
 ## 深度登记
 
@@ -30,3 +31,7 @@ AI/ML · 传统ML · 中型
 | TRAP-44 | 校准样本不足 | 分派前转人工判读并保留原因 | `src/venuegate/gate_backtest/service.py` | `tests/test_gate_backtest.py::test_empty_calibration_requires_review` |
 | TRAP-53 | 单条推断与混批 | 复用冻结参数，各条估计完全一致 | `src/venuegate/visitor_counts/service.py` | `tests/test_visitor_counts.py::test_input_batch_invariance` |
 | TRAP-54 | 特征版本与模型不配对 | 拒绝继续推断并要求重拟合 | `src/venuegate/visitor_counts/service.py` | `tests/test_visitor_counts.py::test_mismatched_model_input_version_fails` |
+| TRAP-61 | 降客流方案超训练域或缺校准 | 整单保留原安排，不替换当班处置 | `src/venuegate/shift_trials/service.py` | `tests/test_shift_trials.py::test_out_of_training_domain_rejects_relief_scenario` |
+| TRAP-62 | 验电暂停批次试算解除暂停 | 暂停/人工判读优先，试算不得改状态 | `src/venuegate/shift_trials/service.py` | `tests/test_shift_trials.py::test_paused_batch_trial_cannot_lift_verification_pause` |
+| TRAP-63 | 版本更新后沿用旧试算 | 依据六字段不匹配即作废，要求重算 | `src/venuegate/shift_trials/registry.py` | `tests/test_trial_api.py::test_stale_basis_is_rejected_and_requires_recompute` |
+| TRAP-64 | 发布重试重复扣减工位 | 同凭证幂等，冻结只发生一次 | `src/venuegate/shift_trials/ledger.py` | `tests/test_trial_api.py::test_retry_publish_does_not_double_deduct` |

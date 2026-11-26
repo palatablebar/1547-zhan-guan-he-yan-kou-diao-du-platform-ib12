@@ -8,6 +8,11 @@ from flask import Flask, jsonify, render_template, request
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge, UnsupportedMediaType
 
 from .pipeline import DISPLAY, MODULES, execute, open_fixture, preview
+from .shift_trials.contracts import (
+    BLOCK_STALE, TrialBasis,
+)
+from .shift_trials.registry import REGISTRY
+from .shift_trials import evidence as trial_evidence
 
 app = Flask(__name__, static_folder='web/static', template_folder='web/templates')
 app.config['MAX_CONTENT_LENGTH'] = 1_500_000
@@ -78,6 +83,67 @@ def stage_detail(stage):
         return jsonify(code='INVALID_BATCH', message=str(issue)), 422
     result = sample(capacity, strategy)
     return jsonify(run_id=result['run_id'], **result['sections'][mapping[stage]])
+
+
+def _basis_from_payload(payload):
+    required = ('batch_hash', 'capacity', 'mode', 'feature_stamp', 'model', 'calibration')
+    missing = [name for name in required if name not in payload]
+    if missing:
+        raise ValueError('试算依据缺少版本字段：' + '、'.join(missing))
+    if type(payload['capacity']) is not int or payload['mode'] not in {'balanced', 'focus'}:
+        raise ValueError('试算依据中的额度或策略无效')
+    return TrialBasis(payload['batch_hash'], payload['capacity'], payload['mode'],
+                      payload['feature_stamp'], payload['model'], payload['calibration'])
+
+
+@app.post('/api/venuegate/trial/publish')
+def publish_trial():
+    try:
+        posted = request.get_json()
+        if not isinstance(posted, dict) or posted.keys() - {'key', 'basis'}:
+            raise ValueError('请求字段无效')
+        key = posted.get('key')
+        if not isinstance(key, str) or not key:
+            raise ValueError('需要发布的批次单号')
+        basis = _basis_from_payload(posted.get('basis') or {})
+        ledger = REGISTRY.find(basis)
+        if ledger is None:
+            return jsonify(code=BLOCK_STALE,
+                           message='当班特征、模型或校准版本已更新，旧试算失效，请用新版重算',
+                           block_code=BLOCK_STALE), 409
+        outcome = ledger.publish(key, basis)
+        body = {'published': outcome.published, 'repeated': outcome.repeated,
+                'message': outcome.message, 'block_code': outcome.block_code,
+                'ledger': trial_evidence.reconciliation_evidence(outcome.check)}
+        if outcome.voucher is not None:
+            body['voucher'] = trial_evidence.voucher_evidence(outcome.voucher)
+        if not outcome.published:
+            return jsonify(code=outcome.block_code or 'TRIAL_REJECTED', **body), 409
+        return jsonify(body)
+    except (BadRequest, UnsupportedMediaType):
+        return jsonify(code='INVALID_JSON', message='请提交 JSON 对象'), 400
+    except ValueError as issue:
+        return jsonify(code='INVALID_BATCH', message=str(issue)), 422
+
+
+@app.post('/api/venuegate/trial/ledger')
+def trial_ledger_view():
+    try:
+        posted = request.get_json()
+        basis = _basis_from_payload(posted if isinstance(posted, dict) else {})
+        ledger = REGISTRY.find(basis)
+        if ledger is None:
+            return jsonify(code=BLOCK_STALE,
+                           message='当班特征、模型或校准版本已更新，旧试算失效，请用新版重算',
+                           block_code=BLOCK_STALE), 409
+        return jsonify(
+            ledger=trial_evidence.reconciliation_evidence(ledger.check()),
+            vouchers=[trial_evidence.voucher_evidence(item) for item in ledger.vouchers_view()],
+        )
+    except (BadRequest, UnsupportedMediaType):
+        return jsonify(code='INVALID_JSON', message='请提交 JSON 对象'), 400
+    except ValueError as issue:
+        return jsonify(code='INVALID_BATCH', message=str(issue)), 422
 
 
 @app.errorhandler(RequestEntityTooLarge)

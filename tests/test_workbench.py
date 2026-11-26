@@ -7,9 +7,11 @@ ROUTE = '/api/venuegate'
 
 def test_preset_workbench_has_real_business_rows():
     output = app.test_client().get(ROUTE+'/overview').get_json()
-    assert len(output['metrics']) == 5 and len(output['sections']) == 8
+    assert len(output['metrics']) == 5 and len(output['sections']) == 9
     assert len(output['rows']) >= 10
     assert output['model'] == 'Poisson 入场人数回归'
+    assert output['sections'][8]['key'] == 'shift_trials'
+    assert all('trial' in row for row in output['rows'])
 
 
 def test_scenario_reallocates_business_capacity():

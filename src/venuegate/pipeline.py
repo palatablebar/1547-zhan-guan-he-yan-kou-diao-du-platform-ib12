@@ -10,6 +10,10 @@ from .gate_backtest import service as calibration_service
 from .venue_shift import service as monitor_service
 from .usher_capacity import service as dispatch_service
 from .entrance_register import service as audit_service
+from .shift_trials import service as trial_service
+from .shift_trials import evidence as trial_evidence
+from .shift_trials.contracts import TrialBasis
+from .shift_trials.registry import REGISTRY
 from .ticket_windows import contracts as window_contract
 
 PRESET = Path(__file__).resolve().parents[2] / 'sample_data' / 'entry_rotations_sample.json'
@@ -20,7 +24,8 @@ MODULES = (('entry_rotations', '入口排班'),
  ('gate_backtest', '入场回放'),
  ('venue_shift', '入口偏移'),
  ('usher_capacity', '核验分派'),
- ('entrance_register', '值班登记'))
+ ('entrance_register', '值班登记'),
+ ('shift_trials', '试算生效'))
 DISPLAY = {'title': '展馆核验口调度台',
  'object_name': '半小时批次',
  'unit': '人',
@@ -117,6 +122,18 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     allocation=dispatch_service.plan_jobs(checked_live,drift.domain,capacity,mode)
     closed=audit_service.close_batch(documents,intake,windows,allocation,state.fingerprint,kernel.name,mode)
     performance=calibration_service.performance(evaluated)
+
+    # 联动试算：在冻结的特征、模型和校准上重算，只登记真正降低泊松客流的方案。
+    trial_basis = TrialBasis(closed.batch_hash, capacity, mode, state.fingerprint,
+                             kernel.name, fitted_calibration.method)
+    jobs_by_key = {job.key: job for job in allocation.jobs}
+    trial_findings = trial_service.evaluate_all(features.live, jobs_by_key, state,
+                                                 kernel, fitted_calibration, trial_basis)
+    trial_ledger = REGISTRY.open(trial_basis, allocation.capacity, allocation.balance)
+    for finding in trial_findings:
+        trial_ledger.register(finding)
+    trial_check = trial_ledger.check()
+    published_keys = set()
     states = dict(closed.totals.states)
     overview = [
         {'label': '当班半小时批次', 'value': len(allocation.jobs)},
@@ -147,6 +164,15 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     ]
     details[6]['operating_rows'] = operating_rows
     details[6]['operating_title'] = '换场尾队安排'
+    trial_records = [trial_evidence.evaluation_evidence(item, published_keys) for item in trial_findings]
+    trial_stage = stage_at(
+        8, trial_evidence.stage_summary(trial_findings, trial_check),
+        trial_records + trial_evidence.block_summary(trial_findings)
+        + [{'对账': '试算台账'}] + trial_evidence.reconciliation_evidence(trial_check),
+    )
+    trial_stage['vouchers'] = [trial_evidence.voucher_evidence(item)
+                               for item in trial_ledger.vouchers_view()]
+    details.append(trial_stage)
     points = [{'label': row['key'], 'value': row['estimate'], 'state': row['state'], 'zone': row['zone'],
                'upper': row['interval'], 'cost': row['cost']} for row in sorted(row_list, key=lambda row: row['key'])]
     def estimate(vector):
@@ -154,16 +180,33 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
 
     # Compare interventions against frozen features, model and calibration;
     # scenario estimates never overwrite the base ticket or its decision.
+    trial_by_key = {item.key: item for item in trial_findings}
     for row in row_list:
         current = vectors[row['key']]
         row['alternatives'] = feature_service.render_interventions(current, state, estimate)
         row['joint_experiments'] = feature_service.render_joint_experiments(current,state,estimate)
+        finding = trial_by_key[row['key']]
+        row['trial'] = {
+            'status': finding.status,
+            'eligible': finding.eligible,
+            'block_code': finding.block_code,
+            'selected': None if finding.selected is None else
+                        trial_evidence.scenario_evidence(finding.selected),
+            'scenarios': [trial_evidence.scenario_evidence(step) for step in finding.scenarios],
+            'feature_stamp': trial_basis.feature_stamp,
+            'model': trial_basis.model_name,
+            'calibration': trial_basis.calibration_method,
+        }
     details[7]['records'].extend(audit_service.site_checklist(row_list))
     details[7]['records'].extend(audit_service.intervention_summary(row_list))
     overview_report = {'capacity' : capacity, 'mode': mode, 'as_of': as_of, 'sample_hash': closed.batch_hash,
               'policy_hash': closed.policy_hash, 'feature_stamp': state.fingerprint,
               'model': kernel.name, 'run_id': closed.stamp, 'object_name': DISPLAY['object_name'],
               'unit': DISPLAY['unit'], 'sections': details, 'flow_counts': list(states.items()),
+              'trial_basis': {'batch_hash': trial_basis.batch_hash, 'capacity': trial_basis.capacity,
+                              'mode': trial_basis.mode, 'feature_stamp': trial_basis.feature_stamp,
+                              'model': trial_basis.model_name, 'calibration': trial_basis.calibration_method},
+              'trial_ledger': trial_evidence.reconciliation_evidence(trial_check),
               'measures': {'reservations': ('预约票量', '张'),
  'school_groups': ('已申报团队', '团'),
  'rain_mm': ('短时雨量', 'mm'),

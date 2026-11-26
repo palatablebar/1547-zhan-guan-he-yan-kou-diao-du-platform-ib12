@@ -53,6 +53,11 @@ function rowsTable(records, keys, options={}) {
                 const badge = node('span',value[key],'state');
                 badge.dataset.state = value[key];
                 cell.append(badge);
+                if (value.trial?.eligible) {
+                    const mark = node('span','可试算','state trial-flag');
+                    mark.dataset.state = '可试算';
+                    cell.append(mark);
+                }
             } else cell.textContent = valueOf(value[key]);
         }
     }
@@ -83,6 +88,7 @@ function renderMeasurements(card, row) {
     const operations = node('dl',undefined,'record-fields');
     for (const [name,value] of row.operations) operations.append(node('dt',name),node('dd',value));
     card.append(node('h3','作业量计算','inner-heading'),operations);
+    renderTrial(card, row);
     if (row.joint_experiments.length) {
         const joint = node('details',undefined,'rejected');
         joint.append(node('summary','联动推演'));
@@ -96,6 +102,81 @@ function renderMeasurements(card, row) {
         const scenarios = row.alternatives.map(move => ({...move,'变更项':labels[move['变更项']][0],'超训练域':move['超训练域'] ? '需复核' : '—'}));
         showTables(card,scenarios);
     }
+}
+
+function renderTrial(card, row) {
+    const trial = row.trial;
+    if (!trial) return;
+    card.append(node('h3','联动试算（可替换当班处置）','inner-heading'));
+    const head = node('dl',undefined,'record-fields');
+    head.append(node('dt','试算状态'),node('dd',trialStatusLabel(trial)));
+    if (trial.block_code) head.append(node('dt','拦截原因'),node('dd',trial.block_code));
+    if (trial.selected) {
+        const chosen = trial.selected;
+        head.append(node('dt','选定方案'),node('dd',chosen['方案']));
+        head.append(node('dt','新增工位'),node('dd',chosen['新增工位']));
+        head.append(node('dt','原预测 / 替换预测'),node('dd',`${valueOf(chosen['原预测'])} → ${valueOf(chosen['替换预测'])}（降 ${valueOf(chosen['降低客流'])} 人）`));
+        head.append(node('dt','校准区间'),node('dd',chosen['校准区间']));
+        head.append(node('dt','版本依据'),node('dd',`${trial.feature_stamp} · ${trial.model} · ${trial.calibration}`));
+        const publish = node('button','发布生效并冻结工位','ghost trial-publish');
+        publish.type = 'button';
+        publish.addEventListener('click', () => publishTrial(row, publish));
+        head.append(node('dt','生效操作'),node('dd',publish));
+    }
+    card.append(head);
+    if (trial.scenarios?.length) {
+        const box = node('details',undefined,'rejected');
+        box.append(node('summary',`全部试算方案（${trial.scenarios.length}）`));
+        showTables(box, trial.scenarios.map(step => ({
+            方案: step['方案'], 新增工位: step['新增工位'], 原预测: step['原预测'],
+            替换预测: step['替换预测'], 降低客流: step['降低客流'] ? '是' : '否',
+            超训练域: step['超训练域'] ? '是' : '否', 校准有效: step['校准有效'] ? '是' : '否',
+            校准区间: step['校准区间'],
+        })));
+        card.append(box);
+    }
+}
+
+function trialStatusLabel(trial) {
+    if (trial.status === '可生效') return '可生效（降客流且在校准域内）';
+    if (trial.status === '试算生效') return '试算生效';
+    return `试算未生效 · ${trial.block_code ?? ''}`;
+}
+
+async function publishTrial(row, button) {
+    button.disabled = true;
+    appendStatus('正在发布试算');
+    try {
+        const response = await fetch(endpoint + '/trial/publish', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({key: row.key, basis: ledger.trial_basis}),
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            appendStatus(result.message || '试算未发布', true);
+            button.disabled = false;
+            return;
+        }
+        appendStatus(result.message);
+        row.trial.status = '试算生效';
+        const refreshed = await requestResult('/trial/ledger', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(ledger.trial_basis),
+        });
+        renderTrialLedger(refreshed);
+        showDetail();
+    } catch (error) {
+        appendStatus(error.message, true);
+        button.disabled = false;
+    }
+}
+
+function renderTrialLedger(data) {
+    const panel = ledger.sections.find(section => section.key === 'shift_trials');
+    if (!panel) return;
+    panel.records = panel.records.filter(item => !('核对项' in item));
+    panel.records.push(...data.ledger);
+    panel.vouchers = data.vouchers;
 }
 
 function showDetail() {
@@ -130,6 +211,10 @@ function showDetail() {
         card.append(plan);
     }
     showTables(card,panel.records);
+    if (panel.key === 'shift_trials' && panel.vouchers?.length) {
+        card.append(node('h3','试算凭证与工位余额','inner-heading'));
+        showTables(card, panel.vouchers);
+    }
     if (panel.errors.length > 0) {
         const rejected = node('details',undefined,'rejected');
         rejected.append(node('summary',`隔离 ${panel.errors.length} 条`));
@@ -158,6 +243,8 @@ function showQueue() {
 
 function redraw(data) {
     ledger = data;
+    const trialStage = data.sections.find(section => section.key === 'shift_trials');
+    if (trialStage) trialStage.vouchers = [];
     if (focus === 'record') focus = 6;
     byId('stamp').textContent = data.run_id;
     byId('capacity').value = data.capacity;
