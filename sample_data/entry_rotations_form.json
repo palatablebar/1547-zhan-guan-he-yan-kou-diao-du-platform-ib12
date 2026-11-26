@@ -1,0 +1,24 @@
+{
+  "key": "VG-1101",
+  "cohort": "展馆北门",
+  "day": 2,
+  "received": 3,
+  "revision": 1,
+  "result_day": 5,
+  "outcome": 119,
+  "observed": true,
+  "form": {
+    "核验票数": {
+      "reservation_tickets": 115,
+      "reported_school_runs": 13
+    },
+    "场馆口排班": {
+      "rain_deci_mm": 90,
+      "open_gates": 10
+    },
+    "团客到站": {
+      "show_break_seconds": 1140,
+      "bus_due_seconds": 1860
+    }
+  }
+}
